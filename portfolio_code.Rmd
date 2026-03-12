@@ -1,0 +1,995 @@
+---
+title: "Portfolio: Polished Code"
+author: "Tracy Sun"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=TRUE, warning=FALSE)
+```
+
+
+```{r packages, include=FALSE, warning=FALSE}
+library(ggplot2)
+library(stats)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggridges)
+library(MASS)
+library(lme4)
+library(knitr)
+library(kableExtra)
+library(gt)
+library(lmtest)
+library(geepack)
+library(sandwich)
+library(clubSandwich)
+library(scales)
+```
+
+```{r load data, warning=FALSE}
+# load data
+girls_df_full <- read.csv("final_data/womens_df_final.csv")
+boys_df_full <- read.csv("final_data/mens_df_final.csv")
+
+# get only 2 courses (those with the weather data)
+girls_df <- girls_df_full[(girls_df_full$distance == "2.74 Miles") | ((girls_df_full$distance == "2.95 Miles") & (girls_df_full$meet_name != "Gilroy Mustang Invitational")), ]
+boys_df <- boys_df_full[(boys_df_full$distance == "2.74 Miles") | ((boys_df_full$distance == "2.95 Miles") & (boys_df_full$meet_name != "Gilroy Mustang Invitational")), ]
+```
+
+
+```{r load data 2, warning=FALSE}
+# original: 2176 rows for girls, 3943 for boys
+# remove rows with NA's in response
+girls_df <- girls_df[nchar(girls_df$time) > 1, ] %>% dplyr::select(-X) #2165 rows
+boys_df <- boys_df[nchar(boys_df$time) > 1, ] %>% dplyr::select(-X) #3918 rows
+
+girls_df[girls_df$athlete_name == "Heather Grafft", ]$grade <- "9"
+boys_df[boys_df$athlete_name == "Alexander Rothman", ]$grade <- "12"
+
+# convert grade to factor
+girls_df$grade <- factor(as.numeric(as.character(girls_df$grade)), 
+                          levels = c(9, 10, 11, 12), ordered=FALSE)
+boys_df$grade <- factor(as.numeric(as.character(boys_df$grade)), 
+                        levels = c(9, 10, 11, 12), ordered=FALSE)
+# convert date to date object
+boys_df$race_date <- as.Date(boys_df$race_date)
+girls_df$race_date <- as.Date(girls_df$race_date)
+# convert distance to factor (there are only 2 courses)
+boys_df$distance <- factor(boys_df$distance)
+girls_df$distance <- factor(girls_df$distance)
+```
+
+
+```{r edit data}
+# convert the outcome (time) column to proper time format in r
+# also use time in minutes instead of mm:ss.s
+
+# fixing some data entry errors
+girls_df[(girls_df$athlete_name == "Rachael Qian") & 
+            (girls_df$race_date == "2019-10-16") &
+            (girls_df$distance == "2.74 Miles"), ]$time <- "24:00.2"
+girls_df[(girls_df$athlete_name == "Vibha Chandrasekar") & 
+            (girls_df$race_date == "2019-10-16") &
+            (girls_df$distance == "2.74 Miles"), ]$time <- "17:55.7"
+girls_df[(girls_df$athlete_name == "Zhao Xintong"), ]$athlete_name <- "Cindy Zhao" # these are the same person
+girls_df <- girls_df[!(girls_df$athlete_name == "Helya Dada"), ] # from experience, pretty sure this obs is misentered, and this person just finished early
+
+girls_df <- dplyr::mutate(girls_df,
+                    time_min = as.numeric(lubridate::ms(time))/60)
+```
+
+```{r edit data 2}
+# fixing some data entry errors
+boys_df[(boys_df$athlete_name == "Zachary Derse") & 
+            (boys_df$race_date == "2021-10-14") &
+            (boys_df$distance == "2.74 Miles"), ]$time <- "18:06.4"
+boys_df[(boys_df$athlete_name == "Brian Jackson") & 
+            (boys_df$race_date == "2019-09-12") &
+            (boys_df$distance == "2.74 Miles"), ]$time <- "18:42.0"
+boys_df[(boys_df$athlete_name == "Brian Jackson") & 
+            (boys_df$race_date == "2019-10-12") &
+            (boys_df$distance == "2.95 Miles"), ]$time <- "17:30.6"
+boys_df[(boys_df$athlete_name == "Skyler Giammona") & 
+            (boys_df$race_date == "2019-10-16") &
+            (boys_df$distance == "2.74 Miles"), ]$time <- "18:35.5"
+boys_df[(boys_df$athlete_name == "David Colman") & 
+            (boys_df$race_date == "2015-09-24") &
+        (boys_df$distance == "2.74 Miles"), ]$time <- "20:38.0"
+boys_df[(boys_df$athlete_name == "Nikola Milinovich") & 
+            (boys_df$race_date == "2014-10-23") &
+        (boys_df$distance == "2.74 Miles"), ]$time <- "18:35.0"
+boys_df[(boys_df$athlete_name == "Ethan Soe") & 
+            (boys_df$race_date == "2017-10-05") &
+        (boys_df$distance == "2.74 Miles"), ]$time <- "17:24.0"
+
+boys_df <- dplyr::mutate(boys_df,
+                    time_min = as.numeric(lubridate::ms(time))/60)
+```
+
+```{r add vars}
+# add column: race year
+girls_df$race_year <- factor(
+  as.numeric(as.character(lubridate::year(as.Date(girls_df$race_date)))), 
+                              ordered=FALSE, levels = 2002:2025)
+boys_df$race_year <- factor(
+  as.numeric(as.character(lubridate::year(as.Date(boys_df$race_date)))), 
+                              ordered=FALSE, levels = 2002:2025)
+
+# percentage improvement in terms of time itself, based on a running mean of past times, this gets past the season reset the is_imp variable has
+girls_df <- girls_df %>%
+  group_by(athlete_name, distance) %>%
+  arrange(race_date, .by_group = TRUE) %>% 
+  mutate(time_pct_imp = 
+    100*(lag(cummean(time_min)) - time_min)/lag(cummean(time_min))
+    )  %>%
+  ungroup()
+girls_df$time_pct_imp[is.na(girls_df$time_pct_imp)] <- 0
+
+boys_df <- boys_df %>%
+  group_by(athlete_name, distance) %>%
+  arrange(race_date, .by_group = TRUE) %>% 
+  mutate(time_pct_imp = 
+    100*(lag(cummean(time_min)) - time_min)/lag(cummean(time_min)) 
+    )  %>%
+  ungroup()
+boys_df$time_pct_imp[is.na(boys_df$time_pct_imp)] <- 0
+
+# add column: which year an athlete achieved their PR
+girls_df_prgrade <- girls_df %>%
+  group_by(athlete_name, distance) %>%
+  summarise(
+    PR_grade = case_when(
+      any(is_PR == 1) ~ grade[which(is_PR == 1)][1],
+      # get grade where is_PR is true
+      any(is_SR == 1) ~ grade[which(is_SR == 1)][1],
+      # if there is not PR listed then get SR and then the corresponding grade when it happened
+      .default = grade[which.min(time_min)]
+      # otherwise manually check the times and get the corresponding grade
+    )
+  )
+boys_df_prgrade <- boys_df %>%
+  group_by(athlete_name, distance) %>%
+  summarise(
+    PR_grade = case_when(
+      any(is_PR == 1) ~ grade[which(is_PR == 1)][1],
+      any(is_SR == 1) ~ grade[which(is_SR == 1)][1],
+      .default = grade[which.min(time_min)]
+    )
+  )
+
+# join columns to the main dataframe
+girls_df <- left_join(girls_df, girls_df_prgrade, 
+      by = c("athlete_name", "distance"))
+boys_df <- left_join(boys_df, boys_df_prgrade, 
+      by = c("athlete_name", "distance"))
+```
+
+# EDA
+## Exploratory Graphs
+
+```{r fig1 all times by course, fig.width=12, fig.height=4}
+girls_df2 <- girls_df
+girls_df2$group <- rep("Girls Team", nrow(girls_df2))
+
+boys_df2 <- boys_df
+boys_df2$group <- rep("Boys Team", nrow(boys_df2))
+
+combined_df <- rbind(girls_df2, boys_df2)
+cols <- c("#2eb5a5", "#b73cc5") 
+#c("#05369C", "#FB77B0")
+
+mont_comb <- ggplot(combined_df[combined_df$distance == "2.74 Miles", ], 
+       aes(x = time_min, colour = group)) +
+  geom_density(show.legend = FALSE) +
+  labs(title="Team racetime distribution at Montgomery Hill (2.74 Miles)", 
+       x="Time in minutes") +
+  scale_color_manual(values = cols) +
+  theme_minimal()
+
+cs_comb <- ggplot(combined_df[combined_df$distance == "2.95 Miles", ], 
+       aes(x = time_min, colour = group)) +
+  geom_density(show.legend = FALSE) +
+  labs(title="Team racetime distribution at Crystal Springs (2.95 Miles)", 
+       x="Time in minutes") +
+  scale_color_manual(values = cols) +
+  annotate("text", x = 45, y = 0.01, 
+           label = "Boys", color=cols[1]) +
+    annotate("text", x = 45, y = -0.01, 
+           label = "Girls", color=cols[2]) +
+  theme_minimal()
+
+mont_comb | cs_comb
+```
+
+```{r grade violin, fig.height = 4.5, fig.width = 16}
+boys_grade <- ggplot(
+  boys_df[boys_df$distance %in% c("2.74 Miles", "2.95 Miles"), ],
+  aes(x = grade, y = time_min)
+) +
+  geom_violin(fill = cols[1], alpha = 0.6, 
+              linewidth = 0.2) +
+  stat_summary(
+    fun = median,
+    aes(group = 1),
+    geom = "line",
+    color = "black",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    color = "black",
+    size = 2
+  ) + 
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    aes(group = 1),
+    geom = "line",
+    color = "red",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    geom = "point",
+    color = "red",
+    size = 2
+  ) +
+  facet_wrap(~ distance, nrow = 1) +
+  labs(
+    title = "Boys team racetime distributions by grade and course",
+    x = "",
+    y = "Time in minutes"
+   ) +
+  ylim(15, 45) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title = element_text(size = 15),
+    strip.text.x = element_text(size = 20),
+    axis.text = element_text(size = 15)
+  ) 
+
+girls_grade <- ggplot(
+  girls_df[girls_df$distance %in% c("2.74 Miles", "2.95 Miles"), ],
+  aes(x = grade, y = time_min)
+) +
+  geom_violin(fill = cols[2], alpha = 0.6, 
+              linewidth = 0.2) +
+  stat_summary(
+    fun = median,
+    aes(group = 1),
+    geom = "line",
+    color = "black",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    color = "black",
+    size = 2
+  ) + 
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    aes(group = 1),
+    geom = "line",
+    color = "red",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    geom = "point",
+    color = "red",
+    size = 2
+  ) +
+  facet_wrap(~ distance, nrow = 1) +
+  labs(
+    title = "Girls team racetime distributions by grade and course",
+    x = "",
+    y = "Time in minutes"
+   ) +
+  ylim(15, 45) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title = element_text(size = 15),
+    strip.text.x = element_text(size = 20),
+    axis.text = element_text(size = 15)
+  ) 
+
+boys_grade | girls_grade
+```
+
+```{r year violin, fig.height = 7, fig.width = 16}
+boys_df_violin <- ggplot(
+  boys_df[boys_df$distance %in% c("2.74 Miles", "2.95 Miles"), ],
+  aes(x = race_year, y = time_min)
+) +
+  geom_violin(fill = cols[1], alpha = 0.6, 
+              linewidth = 0.2) +
+  stat_summary(
+    fun = median,
+    aes(group = 1),
+    geom = "line",
+    color = "black",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    color = "black",
+    size = 2
+  ) + 
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    aes(group = 1),
+    geom = "line",
+    color = "red",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    geom = "point",
+    color = "red",
+    size = 2
+  ) +
+  facet_wrap(~ distance, nrow = 1) +
+  labs(
+    title = "Boys team racetime distributions by course and year",
+    x = "",
+    y = "Time in minutes"
+   ) +
+  scale_x_discrete(breaks = seq(2005, 2025, by = 5),
+                   drop=FALSE) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 25),
+    axis.title = element_text(size = 15),
+    strip.text.x = element_text(size = 20),
+    axis.text = element_text(size = 15)
+  ) 
+
+girls_df_violin <- ggplot(
+  girls_df[girls_df$distance %in% c("2.74 Miles", "2.95 Miles"), ],
+  aes(x = race_year, y = time_min)
+) +
+  geom_violin(fill = cols[2], alpha = 0.6, 
+              linewidth = 0.2) +
+  stat_summary(
+    fun = median,
+    aes(group = 1),
+    geom = "line",
+    color = "black",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    color = "black",
+    size = 2
+  ) + 
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    aes(group = 1),
+    geom = "line",
+    color = "red",
+    linewidth = 1
+  ) +
+  stat_summary(
+    fun = quantile, fun.args = list(probs = 0.1),
+    geom = "point",
+    color = "red",
+    size = 2
+  ) +
+  facet_wrap(~ distance, nrow = 1) +
+  labs(
+    title = "Girls team racetime distributions by course and year",
+    x = "",
+    y = "Time in minutes"
+   ) +
+  scale_x_discrete(breaks = seq(2005, 2025, by = 5),
+                    drop=FALSE) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 25),
+    axis.title = element_text(size = 15),
+    strip.text.x = element_text(size = 20),
+    axis.text = element_text(size = 15)
+  ) 
+
+boys_df_violin  / girls_df_violin
+```
+
+```{r teamsize}
+team_count_peryear <- combined_df %>% 
+  distinct(athlete_name, race_year, group, .keep_all = TRUE) %>%
+  group_by(group, race_year) %>% 
+  summarise(count = n())
+team_count_peryear$race_year <- as.numeric(as.character(team_count_peryear$race_year))
+
+ggplot(data= team_count_peryear, 
+       mapping = aes(x = race_year, y = count, colour=group)) +
+  geom_line(show.legend=FALSE) +
+  geom_vline(xintercept = 2020, col="red", linewidth=1.2) +
+  xlab("") +
+  ylab("") +
+  labs(title = "Size of Leland cross country teams over the years") +
+  scale_color_manual(values = cols) + 
+  scale_x_continuous(breaks = seq(2005, 2025, by = 5)) +
+  annotate("text", x = 2026, y = 34, 
+           label = "Boys", color=cols[1]) +
+  annotate("text", x = 2026, y = 8, 
+           label = "Girls", color=cols[2]) +
+  theme_minimal()
+```
+
+```{r teamsize by grade}
+team_count_peryear_grade <- combined_df %>% 
+  distinct(athlete_name, race_year, grade, group, .keep_all = TRUE) %>%
+  group_by(group, grade, race_year) %>% 
+  summarise(count = n())
+team_count_peryear_grade$race_year <- as.numeric(as.character(team_count_peryear_grade$race_year))
+
+team_count_peryear_grade$grade_group <-
+  interaction(team_count_peryear_grade$group,
+              team_count_peryear_grade$grade,
+              sep = "_")
+
+ggplot(team_count_peryear_grade,
+       aes(x = race_year, y = count, fill = grade_group)) +
+  geom_bar(position = "fill", stat = "identity", show.legend=FALSE) +
+  facet_wrap(~ group, nrow = 1) +
+  scale_fill_manual(values = c(
+    "Boys Team_9"  = "#DFFBEC",
+    "Boys Team_10" = "#9BEEC2",
+    "Boys Team_11" = "#3EB174",
+    "Boys Team_12" = "#005226",
+    "Girls Team_9"  = "#EFD1FA",
+    "Girls Team_10" = "#D89AEE",
+    "Girls Team_11" = "#933FB1",
+    "Girls Team_12" = "#470061"
+  )) +
+  scale_x_continuous(breaks = seq(2005, 2025, by = 5)) +
+  labs(x = "", y = "") +
+  theme_minimal()
+```
+
+```{r fig4 quant preds vs time, fig.height=7}
+quant_predictors <- c("time_pct_imp", "temp", "rhum")
+
+long_df <- combined_df %>%
+  pivot_longer(cols = all_of(quant_predictors),
+               names_to = "predictor",
+               values_to = "value")
+
+ggplot(long_df, aes(x = value, y = time_min, colour=group)) +
+  geom_point(alpha = 0.4, show.legend = FALSE) +
+  scale_colour_manual(values = c(
+    "Boys Team" = cols[1],
+    "Girls Team" = cols[2])) +
+  facet_wrap(~ predictor + group + distance, 
+             scales = "free_x",
+             ncol = 4) +
+  geom_smooth(
+    data = subset(long_df, predictor != "time_pct_imp"),
+    method = "lm",
+    se = FALSE,
+    linewidth = 0.7,
+    color= "black"
+  ) +
+  geom_smooth(
+    data = subset(long_df, predictor == "time_pct_imp"),
+    method = "lm",
+    formula = y ~ poly(x, 2),
+    se = FALSE,
+    linewidth = 0.7,
+    color= "black"
+  ) +
+  labs(
+    title = "Race Time vs Predictors by Team and Course",
+    x = "Predictor Value",
+    y = "Time (minutes)"
+  ) +
+  theme_minimal() 
+```
+
+
+## Table 1
+
+```{r quant section tbl 1 setup}
+quant_tbl_bycourse <- combined_df %>% group_by(distance, group) %>% 
+  summarise(race_count = n(),
+    time_25 = quantile(time_min, 0.25),
+    time_med = median(time_min), 
+    time_75 = quantile(time_min, 0.75),
+    time_pct_imp_25 = quantile(time_pct_imp, 0.25, na.rm=TRUE),
+    time_pct_imp_med = median(time_pct_imp, na.rm=TRUE), 
+    time_pct_imp_75 = quantile(time_pct_imp, 0.75, na.rm=TRUE)
+    )
+
+quant_tbl_weather <- combined_df %>% 
+  distinct(race_date, distance, .keep_all = TRUE) %>%
+  group_by(distance) %>% 
+  summarise(
+    temp_25 = quantile(temp, 0.25),
+    temp_med = median(temp), 
+    temp_75 = quantile(temp, 0.75),
+    rhum_25 = quantile(rhum, 0.25),
+    rhum_med = median(rhum), 
+    rhum_75 = quantile(rhum, 0.75),
+)
+
+time_wide <- quant_tbl_bycourse %>%
+  mutate(
+    time_summary = sprintf(
+      "%.2f (%.2f–%.2f)",
+      time_med, time_25, time_75
+    )
+  ) %>%
+  dplyr::select(c(distance, group, race_count, time_summary)) %>%
+  pivot_wider(
+    names_from = c(distance, group),
+    values_from = c(race_count, time_summary)
+  )
+
+weather_wide <- quant_tbl_weather %>%
+  mutate(
+    temp_summary = sprintf(
+      "%.2f (%.2f–%.2f)",
+      temp_med, temp_25, temp_75
+    ),
+    rhum_summary = sprintf(
+      "%.2f (%.2f–%.2f)",
+      rhum_med, rhum_25, rhum_75
+    )
+  ) %>%
+  dplyr::select(c(distance, temp_summary, rhum_summary)) %>%
+  pivot_wider(
+    names_from = distance,
+    values_from = c(temp_summary, rhum_summary)
+  )
+```
+
+
+```{r cat section tbl1 setup}
+grade_tbl <- combined_df %>%
+  group_by(group, distance, grade) %>%
+  summarise(grade_count = n()) %>%
+  mutate(
+    percent = grade_count / sum(grade_count) * 100
+  )
+
+# Keep grade table
+# But want to get percentage of people who PR'd in x grade at y course 
+
+# unique_athlete_tbl <- combined_df %>%
+#   distinct(athlete_name, distance, .keep_all = TRUE) %>% 
+#   group_by(group, distance) %>%
+#   summarise(athlete_count = n())
+
+percent_pr_grade_tbl <- combined_df %>%
+  distinct(athlete_name, distance, .keep_all = TRUE) %>%
+  group_by(group, distance, PR_grade) %>%
+  summarise(pr_count = n()) %>%
+  mutate(
+    percent = pr_count / sum(pr_count) * 100
+  )
+
+percent_pr_grade_tbl2 <- combined_df %>% 
+  distinct(athlete_name, race_date, distance, .keep_all = TRUE) %>% 
+  group_by(group, distance, grade) %>%
+  summarise(pr_count = sum(is_PR == 1),
+            race_count = n()) %>%
+  mutate(
+    percent = pr_count / race_count * 100
+  )
+
+percent_pr_total <- combined_df %>% 
+  distinct(athlete_name, race_date, distance, .keep_all = TRUE) %>% 
+  group_by(group, distance) %>%
+  summarise(pr_count = sum(is_PR == 1),
+            race_count = n()) %>%
+  mutate(
+    percent = pr_count / race_count * 100
+  )
+
+grade_wide <- grade_tbl %>%
+  mutate(
+    grade_summary = sprintf(
+      "%d (%.2f%%)",
+      grade_count, percent
+    )
+  ) %>%
+  dplyr::select(distance, group, grade, grade_summary) %>%
+  pivot_wider(
+    names_from = c(distance, group),
+    values_from = grade_summary
+  ) %>%
+  mutate(
+    Characteristic = paste0("Grade: ", grade)
+  ) %>%
+  dplyr::select(
+    Characteristic,
+    `2.74 Miles_Boys Team`,
+    `2.74 Miles_Girls Team`,
+    `2.95 Miles_Boys Team`,
+    `2.95 Miles_Girls Team`
+  )
+
+pr_grade_wide <- percent_pr_grade_tbl %>%
+  mutate(
+    grade_summary = sprintf(
+      "%.2f%%",
+      percent
+    )
+  ) %>%
+  dplyr::select(distance, group, PR_grade, grade_summary) %>%
+  pivot_wider(
+    names_from = c(distance, group),
+    values_from = grade_summary
+  ) %>%
+  mutate(
+    Characteristic = paste0("PR Grade: ", PR_grade)
+  ) %>%
+  dplyr::select(
+    Characteristic,
+    `2.74 Miles_Boys Team`,
+    `2.74 Miles_Girls Team`,
+    `2.95 Miles_Boys Team`,
+    `2.95 Miles_Girls Team`
+  )
+
+pr_grade_wide2 <- percent_pr_grade_tbl2 %>%
+  mutate(
+    grade_summary = sprintf(
+      "%.2f%%",
+      percent
+    )
+  ) %>%
+  dplyr::select(distance, group, grade, grade_summary) %>%
+  pivot_wider(
+    names_from = c(distance, group),
+    values_from = grade_summary
+  ) %>%
+  mutate(
+    Characteristic = paste0("PR Grade: ", grade)
+  ) %>%
+  dplyr::select(
+    Characteristic,
+    `2.74 Miles_Boys Team`,
+    `2.74 Miles_Girls Team`,
+    `2.95 Miles_Boys Team`,
+    `2.95 Miles_Girls Team`
+  )
+
+percent_pr_total_wide <- percent_pr_total %>%
+  mutate(
+    summary = sprintf(
+      "%.2f%%",
+      percent
+    )
+  ) %>%
+  dplyr::select(distance, group, summary) %>%
+  pivot_wider(
+    names_from = c(distance, group),
+    values_from = summary
+  ) %>%
+  mutate(
+    Characteristic = paste0("% of results that were PR's")
+  ) %>%
+  dplyr::select(
+    Characteristic,
+    `2.74 Miles_Boys Team`,
+    `2.74 Miles_Girls Team`,
+    `2.95 Miles_Boys Team`,
+    `2.95 Miles_Girls Team`
+  )
+```
+
+```{r tbl1 gt}
+final_tibble <- tibble(
+  Characteristic = c(
+    "Number of results",
+    "Grade: 9",
+    "Grade: 10",
+    "Grade: 11",
+    "Grade: 12",
+    "Time in minutes (Median (IQR))",
+    "% results that were PR's",
+    "Grade: 9",
+    "Grade: 10",
+    "Grade: 11",
+    "Grade: 12",
+    "Temperature by course (F) (Median (IQR))",
+    "Humidity by course (%) (Median (IQR))"
+  ),
+  `2.74 Boys` = c(
+    time_wide$`race_count_2.74 Miles_Boys Team`,
+    grade_wide$`2.74 Miles_Boys Team`,
+    time_wide$`time_summary_2.74 Miles_Boys Team`,
+    percent_pr_total_wide$`2.74 Miles_Boys Team`,
+    pr_grade_wide2$`2.74 Miles_Boys Team`,
+    weather_wide$`temp_summary_2.74 Miles`,
+    weather_wide$`rhum_summary_2.74 Miles`
+  ),
+  `2.74 Girls` = c(
+    time_wide$`race_count_2.74 Miles_Girls Team`,
+    grade_wide$`2.74 Miles_Girls Team`,
+    time_wide$`time_summary_2.74 Miles_Girls Team`,
+    percent_pr_total_wide$`2.74 Miles_Girls Team`,
+    pr_grade_wide2$`2.74 Miles_Girls Team`,
+    "",
+    ""
+  ),
+  `2.95 Boys` = c(
+    time_wide$`race_count_2.95 Miles_Boys Team`,
+    grade_wide$`2.95 Miles_Boys Team`,
+    time_wide$`time_summary_2.95 Miles_Boys Team`,
+    percent_pr_total_wide$`2.95 Miles_Boys Team`,
+    pr_grade_wide2$`2.95 Miles_Boys Team`,
+    weather_wide$`temp_summary_2.95 Miles`,
+    weather_wide$`rhum_summary_2.95 Miles`
+  ),
+  `2.95 Girls` = c(
+    time_wide$`race_count_2.95 Miles_Girls Team`,
+    grade_wide$`2.95 Miles_Girls Team`,
+    time_wide$`time_summary_2.95 Miles_Girls Team`,
+    percent_pr_total_wide$`2.95 Miles_Girls Team`,
+    pr_grade_wide2$`2.95 Miles_Girls Team`,
+    "",
+    ""
+  )
+)
+
+final_tibble %>%
+  gt() %>%
+  tab_spanner(
+    label = "2.74 Miles",
+    columns = c(`2.74 Boys`, `2.74 Girls`)
+  ) %>%
+  tab_spanner(
+    label = "2.95 Miles",
+    columns = c(`2.95 Boys`, `2.95 Girls`)
+  ) %>%
+  cols_label(
+    `2.74 Boys` = "Boys",
+    `2.74 Girls` = "Girls",
+    `2.95 Boys` = "Boys",
+    `2.95 Girls` = "Girls"
+  ) %>% 
+  cols_width(
+    Characteristic ~ px(200),
+    everything() ~ px(100)) %>% 
+  tab_options(
+    table.font.size = px(10) 
+  )
+```
+
+# Model Fitting
+
+\newpage
+```{r boys model}
+mod1_m <- lmer(time_min ~ grade + 
+                 time_pct_imp + temp + rhum + race_year + distance + 
+                 (1 | athlete_name),
+              data=boys_df)
+mod1_m_summary <- summary(mod1_m)
+
+mod1_m_summary$coefficients %>%
+  kable(caption = "Model coefficient estimates for boys team")
+```
+
+\newpage
+
+```{r girls model}
+mod1_w <- lmer(time_min ~ grade + 
+                 time_pct_imp + temp + rhum + race_year + distance + 
+                 (1 | athlete_name),
+              data=girls_df)
+mod1_w_summary <- summary(mod1_w)
+
+mod1_w_summary$coefficients %>%
+  kable(caption = "Model coefficient estimates for girls team") 
+```
+
+## Model Assessment
+
+```{r girls resid plot}
+plot(mod1_w, xlab = "Fitted Value", ylab="Residual", 
+     main="Residual plot for girls team", 
+     pch=19,
+     col = alpha(cols[2], 0.5))
+```
+
+```{r girls qqplot}
+qqnorm(residuals(mod1_w), main="Normal Q-Q Plot for girls team", col=cols[2])
+qqline(residuals(mod1_w))
+```
+
+
+
+```{r boys resid plot}
+plot(mod1_m, xlab = "Fitted Value", ylab="Residual", 
+     main="Residual plot for boys team", 
+     pch=19,
+     col = alpha(cols[1], 0.5))
+```
+
+```{r boys qqplot}
+qqnorm(residuals(mod1_m), main="Normal Q-Q Plot for boys team", col=cols[1])
+qqline(residuals(mod1_m))
+```
+
+```{r aic}
+AIC(mod1_w)
+AIC(mod1_m)
+```
+
+```{r rmse}
+Metrics::rmse(boys_df$time_min, predict(mod1_m))
+Metrics::rmse(girls_df$time_min, predict(mod1_w))
+```
+
+## Fixed effect estimates
+```{r crses and cis girls}
+mod1_w_ci <- conf_int(mod1_w, vcov = "CR2", level = 0.95)
+
+ggplot(data = mod1_w_ci[c(1:7, 30), ], aes(x = beta, y = Coef)) +
+  geom_point() + 
+  geom_errorbarh(aes(xmax = CI_U, xmin =CI_L)) +
+  geom_vline(xintercept=0, color="red")
+```
+
+```{r crses and cis guys}
+mod1_m_ci <- conf_int(mod1_m, vcov = "CR2", level = 0.95)
+
+ggplot(data = mod1_m_ci[c(1:7, 30), ], aes(x = beta, y = Coef)) +
+  geom_point() + 
+  geom_errorbarh(aes(xmax = CI_U, xmin =CI_L)) +
+  geom_vline(xintercept=0, color="red")
+```
+
+
+```{r combined cis, fig.width=8, fig.height=4}
+ggplot(data = mod1_m_ci[c(1:7, 30), ], aes(x = beta, y = Coef)) +
+  geom_point(color=cols[1], alpha=0.8) + 
+  geom_errorbarh(aes(xmax = CI_U, xmin =CI_L), color=cols[1],
+                 alpha=0.8) +
+  geom_vline(xintercept=0, color="red") +
+  geom_point(data = mod1_w_ci[c(1:7, 30), ], 
+             color=cols[2],
+             alpha=0.8) + 
+  geom_errorbarh(data = mod1_w_ci[c(1:7, 30), ], 
+                 aes(xmax = CI_U, xmin =CI_L), color=cols[2],
+                 alpha=0.8) +
+  labs(x = "", y = "", title="Coefficient confidence intervals") + 
+  annotate("text", x = 17.9, y = 1.5, 
+           label = "Boys", color=cols[1], size=6) +
+  annotate("text", x = 22, y = 1.5, 
+           label = "Girls", color=cols[2], size=6) + theme_minimal()
+```
+
+
+```{r ribbon plot for year cis}
+mod1_m_years <- data.frame(est = mod1_m_ci[c(8:29), ]$beta,
+                           year = c(2003:2019, 2021:2025),
+                           lower = mod1_m_ci[c(8:29), ]$CI_L,
+                           upper = mod1_m_ci[c(8:29), ]$CI_U)
+
+boys_year_cis_plot <- ggplot(data = mod1_m_years, aes(x = year, y = est)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3) +
+  geom_line() + geom_point() +
+  geom_hline(yintercept=0, color="red")
+
+mod1_w_years <- data.frame(est = mod1_w_ci[c(8:29), ]$beta,
+                           year = c(2003:2019, 2021:2025),
+                           lower = mod1_w_ci[c(8:29), ]$CI_L,
+                           upper = mod1_w_ci[c(8:29), ]$CI_U)
+
+girls_year_cis_plot <- ggplot(data = mod1_w_years, aes(x = year, y = est)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3) +
+  geom_line() + geom_point() +
+  geom_hline(yintercept=0, color="red")
+```
+
+```{r ribbons stacked, fig.height=3, fig.width=6}
+ggplot(data = mod1_w_years, aes(x = year, y = est)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill=cols[2], alpha = 0.3) +
+    geom_line(color=cols[2]) + geom_point(color=cols[2]) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill=cols[1], alpha = 0.5,
+              data=mod1_m_years) +
+    geom_line(data=mod1_m_years, color=cols[1]) + 
+    geom_point(data=mod1_m_years, color=cols[1]) +
+  geom_hline(yintercept=0, color="red") +
+  labs(
+    title = "Confidence intervals for year coefficients",
+    x = "",
+    y = ""
+  ) + 
+  annotate("text", x = 2026, y = mod1_m_years$est[length(mod1_m_years$est)], 
+           label = "Boys", color=cols[1]) +
+  annotate("text", x = 2026, y = mod1_w_years$est[length(mod1_w_years$est)], 
+           label = "Girls", color=cols[2]) + 
+  scale_x_continuous(breaks = seq(2005, 2025, by = 5)) +
+  theme_minimal()
+```
+
+## Random effect estimates
+```{r}
+g_reffs <- ranef(mod1_w, postVar = TRUE)
+# g_reff_vars <- attr(ranef(mod1_w, postVar = TRUE)[[1]], "postVar")
+# g_reffs_df <- data.frame(Intercepts=g_reffs$athlete_name[,1],
+#               sd.interc=2 * sqrt(g_reff_vars[1,1,]),
+#               lev.names=rownames(g_reffs$athlete_name))
+g_reffs_df <- g_reffs$athlete_name
+g_reffs_df <- cbind(athlete_name = rownames(g_reffs_df), est = g_reffs_df)
+rownames(g_reffs_df) <- 1:nrow(g_reffs_df)
+colnames(g_reffs_df) <- c("athlete_name", "est")
+g_reffs_df <- sort_by(g_reffs_df, g_reffs_df$est)
+
+ggplot(g_reffs_df, aes(y = reorder(athlete_name, est), x=est)) +
+  geom_vline(xintercept=0, color="red") +
+  geom_point(color=cols[2], alpha=0.8) + 
+  guides(size=FALSE,shape=FALSE) + 
+  theme_minimal() + 
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) + ylab("Athlete") + xlab("")
+```
+
+
+```{r}
+b_reffs <- ranef(mod1_m, postVar = TRUE)
+b_reffs_df <- b_reffs$athlete_name
+b_reffs_df <- cbind(athlete_name = rownames(b_reffs_df), est = b_reffs_df)
+rownames(b_reffs_df) <- 1:nrow(b_reffs_df)
+colnames(b_reffs_df) <- c("athlete_name", "est")
+b_reffs_df <- sort_by(b_reffs_df, b_reffs_df$est)
+
+ggplot(b_reffs_df, aes(y = reorder(athlete_name, est), x=est)) +
+  geom_vline(xintercept=0, color="red") +
+  geom_point(color = cols[1], alpha=0.8) + 
+  geom_line(color=cols[1]) +
+  guides(size=FALSE,shape=FALSE) + 
+  theme_minimal() + 
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) + ylab("Athlete") + xlab("")
+```
+
+```{r, fig.width=10, fig.height=4}
+g_reffs_df$group <- "Girls"
+b_reffs_df$group <- "Boys"
+
+stacked_reffs <- rbind(g_reffs_df, b_reffs_df)
+
+ggplot(stacked_reffs,
+       aes(x = est, fill = group)) +
+  geom_density(alpha = 0.3, linewidth = 0.2, show.legend=FALSE) +
+  geom_vline(xintercept = 0, color="red") +
+  scale_fill_manual(values = c(
+    "Boys" = cols[1],
+    "Girls" = cols[2]
+  )) +
+  annotate("text", x = 2.3, y = 0.1, 
+           label = "Boys", color=cols[1]) +
+  annotate("text", x = 15, y = 0.005, 
+           label = "Girls", color=cols[2]) +
+  labs(x = "", y = "") +
+  theme_minimal()
+```
+
+```{r}
+mod1_w_reffs <- VarCorr(mod1_w)
+mod1_m_reffs <- VarCorr(mod1_m)
+
+# mod1_w_reffs$athlete_name[1]
+# mod1_m_reffs$athlete_name[1]
+
+kable(mod1_w_reffs)
+
+kable(mod1_m_reffs)
+```
+
